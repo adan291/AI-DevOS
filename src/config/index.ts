@@ -77,6 +77,8 @@ export const config = {
   REVIEW_MAX_CHARS_PER_BATCH: () => getIntEnv('REVIEW_MAX_CHARS_PER_BATCH', 24_000),
   // POST /api/review: batches reviewed in parallel
   REVIEW_CONCURRENCY: () => getIntEnv('REVIEW_CONCURRENCY', 2),
+  // POST /api/review: timeout of each LLM call in ms (a batch is larger than a chat message)
+  REVIEW_TIMEOUT_MS: () => getIntEnv('REVIEW_TIMEOUT_MS', 180_000),
 
   // Groq model override (Groq retires models; check https://console.groq.com/docs/models)
   GROQ_MODEL: () => getOptionalEnv('GROQ_MODEL', ''),

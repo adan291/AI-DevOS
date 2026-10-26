@@ -19,8 +19,8 @@ import type { IModelRouter, ModelSelection, ExecutionMetrics, Provider } from '.
 
 /** Error thrown when agent execution times out */
 export class AgentTimeoutError extends Error {
-  constructor(role: AgentRole) {
-    super(`Agent ${role} execution timed out after ${constants.MAX_AGENT_TIMEOUT}ms`);
+  constructor(role: AgentRole, timeoutMs: number = constants.MAX_AGENT_TIMEOUT) {
+    super(`Agent ${role} execution timed out after ${timeoutMs}ms`);
     this.name = 'AgentTimeoutError';
   }
 }
@@ -180,18 +180,26 @@ export abstract class BaseAgent implements Agent {
   }
   
   /**
-   * Execute the prompt with a 60s timeout.
+   * Timeout per LLM call. 60 s by default; agents with long inputs override it.
+   */
+  protected timeoutMs(): number {
+    return constants.MAX_AGENT_TIMEOUT;
+  }
+
+  /**
+   * Execute the prompt with the agent timeout.
    */
   protected async executeWithTimeout(prompt: string, onStream?: StreamCallback): Promise<string> {
     // Abort the HTTP request on timeout so the provider stops generating
     // (and billing) instead of finishing in the background.
     const controller = new AbortController();
+    const timeoutMs = this.timeoutMs();
     let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         controller.abort();
-        reject(new AgentTimeoutError(this.role));
-      }, constants.MAX_AGENT_TIMEOUT);
+        reject(new AgentTimeoutError(this.role, timeoutMs));
+      }, timeoutMs);
     });
     
     const executionPromise = requestSignal.run(controller.signal, () =>

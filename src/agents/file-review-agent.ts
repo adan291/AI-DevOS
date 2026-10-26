@@ -39,4 +39,9 @@ export class FileReviewAgent extends ReviewerAgent {
   protected getSystemPrompt(): string {
     return FILE_REVIEW_SYSTEM_PROMPT;
   }
+
+  /** A batch of files takes longer than a chat answer (REVIEW_TIMEOUT_MS, 180 s by default). */
+  protected timeoutMs(): number {
+    return config.REVIEW_TIMEOUT_MS();
+  }
 }
