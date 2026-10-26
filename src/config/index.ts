@@ -18,6 +18,12 @@ function getOptionalEnv(name: string, defaultValue: string): string {
   return process.env[name] ?? defaultValue;
 }
 
+/** Positive integer from the environment; invalid or empty values use the default. */
+function getIntEnv(name: string, defaultValue: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
 // Environment Variables
 export const config = {
   // Discord
@@ -60,6 +66,9 @@ export const config = {
   WEBHOOK_API_KEY: () => getOptionalEnv('WEBHOOK_API_KEY', ''),
   // Interface the HTTP APIs bind to. Non-loopback values require WEBHOOK_API_KEY.
   API_HOST: () => getOptionalEnv('API_HOST', '127.0.0.1'),
+  // REST API body limits in bytes (413 when exceeded)
+  API_MAX_BODY_BYTES: () => getIntEnv('API_MAX_BODY_BYTES', 256 * 1024),
+  REVIEW_MAX_BODY_BYTES: () => getIntEnv('REVIEW_MAX_BODY_BYTES', 2 * 1024 * 1024),
 
   // Groq model override (Groq retires models; check https://console.groq.com/docs/models)
   GROQ_MODEL: () => getOptionalEnv('GROQ_MODEL', ''),

@@ -21,6 +21,11 @@ import type { NormalizedEvent } from '../types/events.js';
 import { subAgentRegistry, getSubAgent } from '../agents/sub-agents/index.js';
 import { getIngestionService, getKnowledgeStore } from '../ingestion/index.js';
 import { resolveBindHost, isJsonRequest } from './bind-host.js';
+import { HttpError, readJsonBody } from './http-body.js';
+import type { KnowledgeType } from '../ingestion/knowledge-store.js';
+
+/** Paths with their own (larger) body limit */
+const REVIEW_PATH = '/api/review';
 
 export interface RestApiConfig {
   port: number;
@@ -28,6 +33,17 @@ export interface RestApiConfig {
   /** Interface to bind to (default: API_HOST env, then 127.0.0.1) */
   host?: string;
   orchestrator?: Orchestrator;
+  /** Max body bytes for most endpoints (default: API_MAX_BODY_BYTES, 256 KB) */
+  maxBodyBytes?: number;
+  /** Max body bytes for POST /api/review (default: REVIEW_MAX_BODY_BYTES, 2 MB) */
+  maxReviewBodyBytes?: number;
+}
+
+/** Body of POST /api/ask */
+interface AskBody {
+  question?: unknown;
+  agent?: unknown;
+  context?: { guildId?: string; channelId?: string; projectName?: string };
 }
 
 export class RestApi {
@@ -36,23 +52,34 @@ export class RestApi {
   private host: string;
   private apiKey: string;
   private orchestrator: Orchestrator | null;
-  private pendingResponses: Map<string, { resolve: (value: string) => void; timeout: NodeJS.Timeout }> = new Map();
+  private maxBodyBytes: number;
+  private maxReviewBodyBytes: number;
 
   constructor(restConfig: RestApiConfig) {
     this.port = restConfig.port;
     this.apiKey = restConfig.apiKey ?? '';
     this.host = resolveBindHost(restConfig.host ?? config.API_HOST(), this.apiKey, 'REST API');
     this.orchestrator = restConfig.orchestrator ?? null;
+    this.maxBodyBytes = restConfig.maxBodyBytes ?? config.API_MAX_BODY_BYTES();
+    this.maxReviewBodyBytes = restConfig.maxReviewBodyBytes ?? config.REVIEW_MAX_BODY_BYTES();
   }
 
   async start(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
+      this.server.once('error', reject);
       this.server.listen(this.port, this.host, () => {
-        console.log(`[REST API] Listening on ${this.host}:${this.port}`);
+        this.server?.off('error', reject);
+        console.log(`[REST API] Listening on ${this.host}:${this.getPort()}`);
         resolve();
       });
     });
+  }
+
+  /** Port actually bound (useful when started with port 0). */
+  getPort(): number {
+    const address = this.server?.address();
+    return address && typeof address === 'object' ? address.port : this.port;
   }
 
   async stop(): Promise<void> {
@@ -117,6 +144,12 @@ export class RestApi {
         this.sendJson(res, 404, { error: 'Not found' });
       }
     } catch (error) {
+      if (error instanceof HttpError) {
+        // After a 413 the rest of the body is not read: close the connection
+        const headers = error.status === 413 ? { Connection: 'close' } : undefined;
+        this.sendJson(res, error.status, { error: error.message }, headers);
+        return;
+      }
       console.error('[REST API] Error:', error);
       this.sendJson(res, 500, { error: 'Internal server error' });
     }
@@ -146,11 +179,14 @@ export class RestApi {
 
   /** POST /api/ask */
   private async handleAsk(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await this.readBody(req);
-    const { question, agent, context } = JSON.parse(body);
+    const { question, agent, context } = (await this.readJson(req)) as AskBody;
 
-    if (!question) {
+    if (!question || typeof question !== 'string') {
       this.sendJson(res, 400, { error: 'question is required' });
+      return;
+    }
+    if (agent !== undefined && typeof agent !== 'string') {
+      this.sendJson(res, 400, { error: 'agent must be a string' });
       return;
     }
 
@@ -212,8 +248,7 @@ export class RestApi {
 
   /** POST /api/ingest */
   private async handleIngest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await this.readBody(req);
-    const { type, path: sourcePath } = JSON.parse(body);
+    const { type, path: sourcePath } = (await this.readJson(req)) as { type?: string; path?: string };
 
     if (!type || !sourcePath) {
       this.sendJson(res, 400, { error: 'type and path are required' });
@@ -247,8 +282,7 @@ export class RestApi {
 
   /** POST /api/generate */
   private async handleGenerate(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await this.readBody(req);
-    const { type, entity, format } = JSON.parse(body);
+    const { type, entity, format } = (await this.readJson(req)) as { type?: string; entity?: string; format?: string };
 
     if (!type) {
       this.sendJson(res, 400, { error: 'type is required (summary, documentation, presentation)' });
@@ -267,8 +301,11 @@ export class RestApi {
 
   /** POST /api/knowledge/search */
   private async handleKnowledgeSearch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await this.readBody(req);
-    const { query, type, limit } = JSON.parse(body);
+    const { query, type, limit } = (await this.readJson(req)) as {
+      query?: string;
+      type?: KnowledgeType;
+      limit?: number;
+    };
 
     if (!query) {
       this.sendJson(res, 400, { error: 'query is required' });
@@ -325,18 +362,21 @@ export class RestApi {
 
   // Helpers
 
-  private sendJson(res: http.ServerResponse, status: number, data: unknown): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
+  private sendJson(
+    res: http.ServerResponse,
+    status: number,
+    data: unknown,
+    headers?: Record<string, string>
+  ): void {
+    res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
     res.end(JSON.stringify(data));
   }
 
-  private readBody(req: http.IncomingMessage): Promise<string> {
-    return new Promise((resolve, reject) => {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', () => resolve(body));
-      req.on('error', reject);
-    });
+  /** Parse the JSON body with the limit that applies to this path. */
+  private readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    const limit = path === REVIEW_PATH ? this.maxReviewBodyBytes : this.maxBodyBytes;
+    return readJsonBody(req, limit);
   }
 }
 
