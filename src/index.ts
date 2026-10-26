@@ -54,6 +54,7 @@ import './agents/sub-agents/index.js';
 
 // REST API
 import { createRestApi } from './api/rest-api.js';
+import { assertNoPortConflict, getRestApiPort, getWebhookAdapterPort } from './api/ports.js';
 
 /** Console logger implementation */
 const logger: OrchestratorLogger = {
@@ -142,6 +143,14 @@ function initVCSAdapters(): VCSManager {
 /** Initialize all components and start the bot */
 async function main(): Promise<void> {
   logger.info('AI DevOS starting...');
+
+  // Fail before opening any connection if two servers would share a port
+  const apiPort = getRestApiPort();
+  assertNoPortConflict(
+    config.CHAT_ADAPTERS().split(',').map(s => s.trim().toLowerCase()),
+    apiPort,
+    getWebhookAdapterPort()
+  );
 
   // Initialize database connections
   logger.info('Connecting to PostgreSQL...');
@@ -240,7 +249,6 @@ async function main(): Promise<void> {
   await chatManager.start();
 
   // Start REST API
-  const apiPort = parseInt(config.WEBHOOK_PORT?.() ?? '3001', 10);
   const restApi = createRestApi({
     port: apiPort,
     apiKey: config.WEBHOOK_API_KEY?.() ?? '',

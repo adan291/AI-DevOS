@@ -126,3 +126,59 @@ describe('body limit configuration', () => {
     expect(config.REVIEW_MAX_BODY_BYTES()).toBe(2 * 1024 * 1024);
   });
 });
+
+describe('RestApi api-only mode', () => {
+  let api: RestApi;
+  let port: number;
+
+  beforeAll(async () => {
+    api = new RestApi({ port: 0, host: '127.0.0.1', apiKey: API_KEY, mode: 'api-only' });
+    await api.start();
+    port = api.getPort();
+  });
+
+  afterAll(async () => {
+    await api.stop();
+  });
+
+  it('reports the mode in /api/status', async () => {
+    const res = await request(port, { path: '/api/status' });
+    expect(res.json()).toMatchObject({ status: 'ok', mode: 'api-only' });
+  });
+
+  it('serves /api/agents', async () => {
+    const res = await request(port, { path: '/api/agents', headers: AUTH });
+    expect(res.status).toBe(200);
+  });
+
+  it('hides endpoints that need the orchestrator or persistence', async () => {
+    for (const path of ['/api/knowledge/stats', '/api/ingest/abc']) {
+      const res = await request(port, { path, headers: AUTH });
+      expect(res.status).toBe(404);
+    }
+    const res = await request(port, { method: 'POST', path: '/api/ingest', headers: AUTH, body: '{}' });
+    expect(res.status).toBe(404);
+  });
+
+  it('only accepts sub-agents in /api/ask', async () => {
+    const res = await request(port, {
+      method: 'POST',
+      path: '/api/ask',
+      headers: AUTH,
+      body: JSON.stringify({ question: 'hola', agent: 'reviewer' }),
+    });
+    expect(res.status).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/sub-agents/);
+  });
+
+  it('still validates unknown sub-agents', async () => {
+    const res = await request(port, {
+      method: 'POST',
+      path: '/api/ask',
+      headers: AUTH,
+      body: JSON.stringify({ question: 'hola', agent: 'nope.nope' }),
+    });
+    expect(res.status).toBe(400);
+    expect(res.json()).toEqual({ error: 'Sub-agent "nope.nope" not found' });
+  });
+});

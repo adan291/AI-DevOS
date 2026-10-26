@@ -62,7 +62,10 @@ export const config = {
   GITLAB_URL: () => getOptionalEnv('GITLAB_URL', 'https://gitlab.com'),
   
   // Webhook adapter (optional)
+  // Port of the REST API (/api/*). Also the WebhookAdapter port unless
+  // WEBHOOK_ADAPTER_PORT is set; both cannot share it (checked at startup).
   WEBHOOK_PORT: () => getOptionalEnv('WEBHOOK_PORT', '3001'),
+  WEBHOOK_ADAPTER_PORT: () => getOptionalEnv('WEBHOOK_ADAPTER_PORT', ''),
   WEBHOOK_API_KEY: () => getOptionalEnv('WEBHOOK_API_KEY', ''),
   // Interface the HTTP APIs bind to. Non-loopback values require WEBHOOK_API_KEY.
   API_HOST: () => getOptionalEnv('API_HOST', '127.0.0.1'),
@@ -132,12 +135,23 @@ export const constants = {
 export type Config = typeof config;
 export type Constants = typeof constants;
 
+/** Startup mode: everything (chat, Postgres, Redis) or only the REST API */
+export type RunMode = 'full' | 'api';
+
+/** True when at least one LLM provider has credentials (or a local Ollama model). */
+export function hasLlmProvider(): boolean {
+  return ['ANTHROPIC_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_MODEL'].some(
+    (name) => !!process.env[name]
+  );
+}
+
 /**
  * Validates all required environment variables.
  * Call this at application startup to fail fast if configuration is missing.
+ * The 'api' mode needs neither Discord nor a database.
  */
-export function validateConfig(): void {
-  const requiredVars = ['DISCORD_TOKEN', 'DATABASE_URL'];
+export function validateConfig(mode: RunMode = 'full'): void {
+  const requiredVars = mode === 'full' ? ['DISCORD_TOKEN', 'DATABASE_URL'] : [];
   const missing: string[] = [];
   
   for (const varName of requiredVars) {
@@ -147,12 +161,8 @@ export function validateConfig(): void {
   }
   
   // Need at least one LLM provider
-  const hasAnthropic = !!process.env['ANTHROPIC_API_KEY'];
-  const hasGroq = !!process.env['GROQ_API_KEY'];
-  const hasOllama = !!process.env['OLLAMA_MODEL'];
-  
-  if (!hasAnthropic && !hasGroq && !hasOllama) {
-    missing.push('GROQ_API_KEY, ANTHROPIC_API_KEY or OLLAMA_MODEL');
+  if (!hasLlmProvider()) {
+    missing.push('GROQ_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or OLLAMA_MODEL');
   }
   
   if (missing.length > 0) {

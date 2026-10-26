@@ -42,7 +42,17 @@ export interface RestApiConfig {
   maxReviewBodyBytes?: number;
   /** Service behind POST /api/review (default: created on first use) */
   reviewService?: ReviewService;
+  /**
+   * 'api-only' exposes only /api/status, /api/agents, /api/review and
+   * /api/ask for sub-agents (no orchestrator, Postgres or Redis behind it).
+   */
+  mode?: RestApiMode;
 }
+
+export type RestApiMode = 'full' | 'api-only';
+
+/** Routes available without orchestrator or persistence */
+const API_ONLY_PATHS = new Set(['/api/status', '/api/agents', '/api/ask', REVIEW_PATH]);
 
 /** Body of POST /api/ask */
 interface AskBody {
@@ -60,6 +70,7 @@ export class RestApi {
   private maxBodyBytes: number;
   private maxReviewBodyBytes: number;
   private reviewService: ReviewService | null;
+  private mode: RestApiMode;
 
   constructor(restConfig: RestApiConfig) {
     this.port = restConfig.port;
@@ -69,6 +80,7 @@ export class RestApi {
     this.maxBodyBytes = restConfig.maxBodyBytes ?? config.API_MAX_BODY_BYTES();
     this.maxReviewBodyBytes = restConfig.maxReviewBodyBytes ?? config.REVIEW_MAX_BODY_BYTES();
     this.reviewService = restConfig.reviewService ?? null;
+    this.mode = restConfig.mode ?? 'full';
   }
 
   async start(): Promise<void> {
@@ -128,6 +140,11 @@ export class RestApi {
       }
     }
 
+    if (this.mode === 'api-only' && !API_ONLY_PATHS.has(path)) {
+      this.sendJson(res, 404, { error: 'Not found' });
+      return;
+    }
+
     try {
       // Route requests
       if (path === '/api/status' && req.method === 'GET') {
@@ -169,6 +186,7 @@ export class RestApi {
     this.sendJson(res, 200, {
       status: 'ok',
       version: '1.0.0',
+      mode: this.mode,
       uptime: process.uptime(),
       agents: subAgentRegistry.list(),
     });
@@ -221,6 +239,13 @@ export class RestApi {
         answer: result.output,
         success: result.success,
         error: result.error,
+      });
+      return;
+    }
+
+    if (this.mode === 'api-only') {
+      this.sendJson(res, 400, {
+        error: 'In API-only mode /api/ask only accepts sub-agents (e.g. "architect.api"); use /api/review for reviews',
       });
       return;
     }

@@ -27,6 +27,7 @@ import type {
 import type { NormalizedEvent } from '../types/events.js';
 import { config } from '../config/index.js';
 import { resolveBindHost } from '../api/bind-host.js';
+import { getWebhookAdapterPort } from '../api/ports.js';
 
 /** In-memory message store for the webhook adapter */
 interface StoredMessage {
@@ -76,7 +77,7 @@ export class WebhookAdapter implements ChatAdapter {
   private apiKey: string;
 
   constructor(port?: number, apiKey?: string) {
-    this.port = port ?? parseInt(config.WEBHOOK_PORT?.() ?? '3001', 10);
+    this.port = port ?? getWebhookAdapterPort();
     this.apiKey = apiKey ?? config.WEBHOOK_API_KEY?.() ?? '';
   }
 

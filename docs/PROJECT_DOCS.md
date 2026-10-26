@@ -122,6 +122,23 @@ Espero que esta descripción haya sido útil. ¡Si tienes alguna pregunta o nece
 
 ## API Endpoints
 
+### REST API (`src/api/rest-api.ts`) y modo solo-API
+
+Esta subsección describe la API que existe en el código. Escucha en `API_HOST:WEBHOOK_PORT` (por defecto `127.0.0.1:3001`) y pide `Authorization: Bearer <WEBHOOK_API_KEY>` en todo salvo `GET /api/status`. Los POST requieren `Content-Type: application/json` (si no, 415). Un JSON mal formado da 400 y un body por encima del límite da 413 (`API_MAX_BODY_BYTES`, 256 KB; `REVIEW_MAX_BODY_BYTES`, 2 MB para `/api/review`).
+
+`POST /api/review` es síncrono (contrato 3.3 de `DynamicBackend/docs/FABRICA.md`):
+
+```json
+{ "files": [{ "path": "src/UserService.java", "content": "..." }],
+  "context": { "projectName": "demo", "stack": ["Java 25", "Spring Boot 3.5"] } }
+```
+
+Respuesta 200: `{ verdict, summary, issues[], reviewedFiles, skippedFiles, model }`. Cada issue tiene `severity` (`high|medium|low`), `category`, `file`, `line`, `description` y `suggestion`; `file`, `line` y `suggestion` valen `null` si no se conocen. Los ficheros se agrupan en lotes de `REVIEW_MAX_CHARS_PER_BATCH` caracteres (24 000) y se revisan de `REVIEW_CONCURRENCY` en `REVIEW_CONCURRENCY` (2). Se omiten los binarios y los que no caben en un lote. El veredicto es `REJECT` si hay algún issue `high`. Si el LLM falla, la respuesta es 502 `{ "error": "LLM review failed" }`.
+
+**Modo solo-API.** `npm run start:api` compila y arranca `dist/api-only.js`; `npm run dev:api` lo arranca con tsx en modo watch. Solo expone `/api/status`, `/api/agents`, `/api/review` y `/api/ask` para sub-agentes (`agent` con punto, por ejemplo `architect.api`). No arranca Discord ni otros adaptadores de chat, ni conecta con Postgres o Redis, así que no necesita `DATABASE_URL` ni `DISCORD_TOKEN`. Variables mínimas: `WEBHOOK_PORT`, `WEBHOOK_API_KEY` y un proveedor LLM (ver `.env.example`).
+
+En el modo completo (`npm start`), si `CHAT_ADAPTERS` incluye `webhook`, el adaptador necesita otro puerto en `WEBHOOK_ADAPTER_PORT`; si coincide con `WEBHOOK_PORT`, el arranque falla con un error que lo explica.
+
 **API Endpoints de DiscordIA**
 
 La siguiente es la documentación de los endpoints API disponibles en el proyecto DiscordIA.
