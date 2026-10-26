@@ -204,3 +204,48 @@ describe('validateReviewRequest', () => {
     expect(validateReviewRequest(body).ok).toBe(false);
   });
 });
+
+describe('rate limits (429)', () => {
+  const rateLimited = (message: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Error(message), { status: 429, ...extra });
+
+  it('reads the wait from Retry-After or from the message', async () => {
+    const { rateLimitDelayMs } = await import('./review-service.js');
+    expect(rateLimitDelayMs(rateLimited('x', { headers: { 'retry-after': '3' } }))).toBe(3000);
+    expect(rateLimitDelayMs(rateLimited('Rate limit reached... Please try again in 45.405s.'))).toBe(45405);
+    expect(rateLimitDelayMs(rateLimited('try again in 1m2.5s'))).toBe(62500);
+    expect(rateLimitDelayMs(rateLimited('429 Too Many Requests'))).toBe(10000);
+    expect(rateLimitDelayMs(new Error('Connection error.'))).toBeNull();
+  });
+
+  it('waits and retries the same batch after a 429', async () => {
+    let calls = 0;
+    const llm = mockLlm(() => {
+      calls++;
+      if (calls === 1) throw rateLimited('Please try again in 2s.');
+      return json('APPROVE', []);
+    });
+    const waits: number[] = [];
+    const service = new ReviewService({ llm, sleep: async (ms) => { waits.push(ms); } });
+    const result = await service.review({ files: [{ path: 'A.java', content: 'class A {}' }] });
+    expect(result.verdict).toBe('APPROVE');
+    expect(calls).toBe(2);
+    expect(waits).toEqual([2000]);
+  });
+
+  it('gives up after the configured retries', async () => {
+    const llm = mockLlm(() => { throw rateLimited('try again in 1s'); });
+    const service = new ReviewService({ llm, rateLimitRetries: 2, sleep: async () => {} });
+    await expect(service.review({ files: [{ path: 'A.java', content: 'class A {}' }] }))
+      .rejects.toBeInstanceOf(ReviewLlmError);
+    expect(llm.complete).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry other errors', async () => {
+    const llm = mockLlm(() => { throw new Error('Connection error.'); });
+    const service = new ReviewService({ llm, sleep: async () => {} });
+    await expect(service.review({ files: [{ path: 'A.java', content: 'class A {}' }] }))
+      .rejects.toBeInstanceOf(ReviewLlmError);
+    expect(llm.complete).toHaveBeenCalledTimes(1);
+  });
+});

@@ -41,6 +41,12 @@ export interface ReviewServiceOptions {
   maxCharsPerBatch?: number;
   /** Batches reviewed in parallel (REVIEW_CONCURRENCY) */
   concurrency?: number;
+  /** Retries after HTTP 429 per model call (REVIEW_RATE_LIMIT_RETRIES) */
+  rateLimitRetries?: number;
+  /** Cap on a single rate-limit wait */
+  maxRateLimitWaitMs?: number;
+  /** Injected in tests */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** A file formatted for the prompt, with line numbers */
@@ -148,15 +154,47 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
+/**
+ * Milliseconds to wait if the error is a rate limit (HTTP 429), or null.
+ * Reads the Retry-After header or the "try again in 45.4s" text that Groq and
+ * OpenAI put in the message. Without a hint, waits 10 s.
+ */
+export function rateLimitDelayMs(error: unknown): number | null {
+  const e = error as { status?: unknown; headers?: unknown; message?: unknown } | null;
+  const message = typeof e?.message === 'string' ? e.message : String(error ?? '');
+  const is429 = e?.status === 429 || /\b429\b|rate limit/i.test(message);
+  if (!is429) return null;
+
+  const headers = e?.headers as { get?: (name: string) => string | null } | Record<string, string> | undefined;
+  const retryAfter = typeof headers?.get === 'function'
+    ? headers.get('retry-after')
+    : (headers as Record<string, string> | undefined)?.['retry-after'];
+  const seconds = Number.parseFloat(retryAfter ?? '');
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+
+  const match = /try again in ((\d+)m)?([\d.]+)s/i.exec(message);
+  if (match) {
+    const minutes = match[2] ? Number.parseInt(match[2], 10) : 0;
+    return Math.ceil((minutes * 60 + Number.parseFloat(match[3])) * 1000);
+  }
+  return 10_000;
+}
+
 export class ReviewService {
   private llm: ReviewLlm | null;
   private readonly maxCharsPerBatch: number;
   private readonly concurrency: number;
+  private readonly rateLimitRetries: number;
+  private readonly maxRateLimitWaitMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(options: ReviewServiceOptions = {}) {
     this.llm = options.llm ?? null;
     this.maxCharsPerBatch = options.maxCharsPerBatch ?? config.REVIEW_MAX_CHARS_PER_BATCH();
     this.concurrency = Math.max(1, options.concurrency ?? config.REVIEW_CONCURRENCY());
+    this.rateLimitRetries = options.rateLimitRetries ?? config.REVIEW_RATE_LIMIT_RETRIES();
+    this.maxRateLimitWaitMs = options.maxRateLimitWaitMs ?? 120_000;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
@@ -223,11 +261,21 @@ export class ReviewService {
     throw new ReviewLlmError(`Unusable model answer: ${secondParsed.error}`);
   }
 
+  /**
+   * One model call. On a rate limit (HTTP 429) waits what the provider asks
+   * (Retry-After or "try again in Ns"), up to rateLimitRetries times.
+   */
   private async call(llm: ReviewLlm, prompt: string): Promise<string> {
-    try {
-      return await llm.complete(prompt);
-    } catch (error) {
-      throw new ReviewLlmError('LLM call failed', error);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await llm.complete(prompt);
+      } catch (error) {
+        const waitMs = rateLimitDelayMs(error);
+        if (waitMs === null || attempt >= this.rateLimitRetries) {
+          throw new ReviewLlmError('LLM call failed', error);
+        }
+        await this.sleep(Math.min(waitMs, this.maxRateLimitWaitMs));
+      }
     }
   }
 

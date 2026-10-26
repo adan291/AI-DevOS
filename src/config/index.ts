@@ -79,6 +79,8 @@ export const config = {
   REVIEW_CONCURRENCY: () => getIntEnv('REVIEW_CONCURRENCY', 2),
   // POST /api/review: timeout of each LLM call in ms (a batch is larger than a chat message)
   REVIEW_TIMEOUT_MS: () => getIntEnv('REVIEW_TIMEOUT_MS', 180_000),
+  // POST /api/review: retries after a rate limit (429) per model call
+  REVIEW_RATE_LIMIT_RETRIES: () => getIntEnv('REVIEW_RATE_LIMIT_RETRIES', 4),
 
   // Groq model override (Groq retires models; check https://console.groq.com/docs/models)
   GROQ_MODEL: () => getOptionalEnv('GROQ_MODEL', ''),
