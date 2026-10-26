@@ -8,6 +8,7 @@
  * 
  * Endpoints:
  * - POST /api/ask → Send a question to the agents
+ * - POST /api/review → Synchronous code review of files (JSON result)
  * - POST /api/ingest → Trigger knowledge ingestion
  * - POST /api/generate → Generate outputs (docs, summaries)
  * - GET /api/status → System status
@@ -23,6 +24,8 @@ import { getIngestionService, getKnowledgeStore } from '../ingestion/index.js';
 import { resolveBindHost, isJsonRequest } from './bind-host.js';
 import { HttpError, readJsonBody } from './http-body.js';
 import type { KnowledgeType } from '../ingestion/knowledge-store.js';
+import { ReviewService, ReviewLlmError } from '../review/review-service.js';
+import { validateReviewRequest } from '../review/review-schema.js';
 
 /** Paths with their own (larger) body limit */
 const REVIEW_PATH = '/api/review';
@@ -37,6 +40,8 @@ export interface RestApiConfig {
   maxBodyBytes?: number;
   /** Max body bytes for POST /api/review (default: REVIEW_MAX_BODY_BYTES, 2 MB) */
   maxReviewBodyBytes?: number;
+  /** Service behind POST /api/review (default: created on first use) */
+  reviewService?: ReviewService;
 }
 
 /** Body of POST /api/ask */
@@ -54,6 +59,7 @@ export class RestApi {
   private orchestrator: Orchestrator | null;
   private maxBodyBytes: number;
   private maxReviewBodyBytes: number;
+  private reviewService: ReviewService | null;
 
   constructor(restConfig: RestApiConfig) {
     this.port = restConfig.port;
@@ -62,6 +68,7 @@ export class RestApi {
     this.orchestrator = restConfig.orchestrator ?? null;
     this.maxBodyBytes = restConfig.maxBodyBytes ?? config.API_MAX_BODY_BYTES();
     this.maxReviewBodyBytes = restConfig.maxReviewBodyBytes ?? config.REVIEW_MAX_BODY_BYTES();
+    this.reviewService = restConfig.reviewService ?? null;
   }
 
   async start(): Promise<void> {
@@ -129,6 +136,8 @@ export class RestApi {
         await this.handleListAgents(res);
       } else if (path === '/api/ask' && req.method === 'POST') {
         await this.handleAsk(req, res);
+      } else if (path === REVIEW_PATH && req.method === 'POST') {
+        await this.handleReview(req, res);
       } else if (path === '/api/ingest' && req.method === 'POST') {
         await this.handleIngest(req, res);
       } else if (path === '/api/generate' && req.method === 'POST') {
@@ -244,6 +253,30 @@ export class RestApi {
       status: 'processing',
       message: 'Question submitted for processing',
     });
+  }
+
+  /** POST /api/review (synchronous, contract 3.3 of FABRICA.md) */
+  private async handleReview(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const parsed = validateReviewRequest(await this.readJson(req));
+    if (!parsed.ok) {
+      this.sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+
+    this.reviewService ??= new ReviewService();
+    try {
+      const result = await this.reviewService.review(parsed.value);
+      this.sendJson(res, 200, result);
+    } catch (error) {
+      if (error instanceof ReviewLlmError) {
+        // Provider details stay in the server log
+        const cause = error.cause instanceof Error ? error.cause.message : error.cause;
+        console.error(`[REST API] Review failed: ${error.message}`, cause ?? '');
+        this.sendJson(res, 502, { error: 'LLM review failed' });
+        return;
+      }
+      throw error;
+    }
   }
 
   /** POST /api/ingest */

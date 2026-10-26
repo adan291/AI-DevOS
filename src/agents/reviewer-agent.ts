@@ -65,7 +65,7 @@ export class ReviewerAgent extends BaseAgent {
     
     try {
       const output = await this.executeWithRetry(prompt);
-      const structured = this.parseReviewerOutput(output);
+      const structured = ReviewerAgent.parseReviewerOutput(output);
       
       return {
         role: this.role,
@@ -163,7 +163,7 @@ Responde siguiendo el formato especificado en tu rol.`;
   /**
    * Parse the LLM output into structured ReviewerOutput.
    */
-  private parseReviewerOutput(output: string): ReviewerOutput {
+  static parseReviewerOutput(output: string): ReviewerOutput {
     const result: ReviewerOutput = {
       issues: [],
       suggestions: [],
@@ -197,7 +197,7 @@ Responde siguiendo el formato especificado en tu rol.`;
   /**
    * Parse issues table from markdown.
    */
-  private parseIssuesTable(content: string): ReviewIssue[] {
+  private static parseIssuesTable(content: string): ReviewIssue[] {
     const issues: ReviewIssue[] = [];
     const lines = content.split('\n').filter(line => line.includes('|'));
     
@@ -235,7 +235,7 @@ Responde siguiendo el formato especificado en tu rol.`;
   /**
    * Parse fix suggestions from markdown.
    */
-  private parseSuggestions(content: string): FixSuggestion[] {
+  private static parseSuggestions(content: string): FixSuggestion[] {
     const suggestions: FixSuggestion[] = [];
     
     // Match issue headers and code blocks
@@ -265,7 +265,7 @@ Responde siguiendo el formato especificado en tu rol.`;
   /**
    * Parse verdict from markdown.
    */
-  private parseVerdict(content: string): ReviewVerdict {
+  private static parseVerdict(content: string): ReviewVerdict {
     const result: ReviewVerdict = {
       decision: 'REJECT',
       reason: 'No se pudo determinar el veredicto',

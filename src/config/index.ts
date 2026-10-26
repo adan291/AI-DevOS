@@ -69,6 +69,11 @@ export const config = {
   // REST API body limits in bytes (413 when exceeded)
   API_MAX_BODY_BYTES: () => getIntEnv('API_MAX_BODY_BYTES', 256 * 1024),
   REVIEW_MAX_BODY_BYTES: () => getIntEnv('REVIEW_MAX_BODY_BYTES', 2 * 1024 * 1024),
+  // POST /api/review: characters of code per LLM call (~4 chars per token).
+  // A file that does not fit in one batch is skipped.
+  REVIEW_MAX_CHARS_PER_BATCH: () => getIntEnv('REVIEW_MAX_CHARS_PER_BATCH', 24_000),
+  // POST /api/review: batches reviewed in parallel
+  REVIEW_CONCURRENCY: () => getIntEnv('REVIEW_CONCURRENCY', 2),
 
   // Groq model override (Groq retires models; check https://console.groq.com/docs/models)
   GROQ_MODEL: () => getOptionalEnv('GROQ_MODEL', ''),
